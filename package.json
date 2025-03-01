@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@cycjimmy/jsmpeg-player": "^6.1.2",
+    "hls.js": "^1.5.20",
     "next": "15.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
