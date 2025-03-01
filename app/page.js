@@ -7,55 +7,67 @@ export default function Home() {
   const hlsRef = useRef(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [streamUrl, setStreamUrl] = useState("");
+
+  useEffect(() => {
+    // Detect local environment
+    const isLocal =
+      window.location.hostname === "localhost" ||
+      window.location.hostname.startsWith("192.168.1");
+
+    setStreamUrl(
+      isLocal
+        ? "http://192.168.1.2/stream.m3u8"
+        : process.env.NEXT_PUBLIC_HLS_STREAM_URL
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!streamUrl || !videoRef.current) return;
+
+    const video = videoRef.current;
+    const hls = new Hls();
+
+    hls.loadSource(streamUrl);
+    hls.attachMedia(video);
+
+    return () => {
+      hls.destroy();
+    };
+  }, [streamUrl]);
 
   useEffect(() => {
     if (!videoRef.current) return;
 
-    const streamUrl =
-      process.env.NEXT_PUBLIC_HLS_STREAM_URL ||
-      "http://your-raspberry-pi-ip:8080/stream/index.m3u8";
+    hlsRef.current = new Hls({
+      enableWorker: true,
+      lowLatencyMode: true,
+    });
 
-    if (Hls.isSupported()) {
-      hlsRef.current = new Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
-      });
-
-      hlsRef.current.on(Hls.Events.MEDIA_ATTACHED, () => {
-        setIsLoading(false);
-      });
-
-      hlsRef.current.on(Hls.Events.ERROR, (event, data) => {
-        if (data.fatal) {
-          setError(`Stream error: ${data.type}`);
-          setIsLoading(false);
-        }
-      });
-
-      hlsRef.current.loadSource(streamUrl);
-      hlsRef.current.attachMedia(videoRef.current);
-
-      videoRef.current.play().catch((e) => {
-        console.log("Autoplay prevented:", e);
-      });
-    } else if (videoRef.current.canPlayType("application/vnd.apple.mpegurl")) {
-      // For Safari
-      videoRef.current.src = streamUrl;
-      videoRef.current.addEventListener("loadedmetadata", () => {
-        setIsLoading(false);
-        videoRef.current.play();
-      });
-    } else {
-      setError("HLS is not supported in your browser");
+    hlsRef.current.on(Hls.Events.MEDIA_ATTACHED, () => {
       setIsLoading(false);
-    }
+    });
+
+    hlsRef.current.on(Hls.Events.ERROR, (event, data) => {
+      if (data.fatal) {
+        setError(`Stream error: ${data.type}`);
+        setIsLoading(false);
+      }
+    });
+
+    hlsRef.current.loadSource(streamUrl);
+    hlsRef.current.attachMedia(videoRef.current);
+
+    videoRef.current.play().catch((e) => {
+      console.log("Autoplay prevented:", e);
+    });
 
     return () => {
       if (hlsRef.current) {
         hlsRef.current.destroy();
       }
     };
-  }, []);
+  }, [streamUrl]);
 
   return (
     <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
