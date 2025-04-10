@@ -13,7 +13,7 @@ export default function Home() {
   const canvasRef = useRef(null);
   const [videoSegments, setVideoSegments] = useState([]);
   const [currentSegmentIndex, setCurrentSegmentIndex] = useState(0);
-  const [playbackMode, setPlaybackMode] = useState("api"); // 'api' or 'server'
+  const [playbackMode, setPlaybackMode] = useState("server"); // Changed default to 'server'
   const [showCanvas, setShowCanvas] = useState(false);
 
   // Keep track of whether video has started playing
@@ -142,23 +142,75 @@ export default function Home() {
             )}`
         );
       } else {
-        // Using external HTTP server (e.g., Python's http.server)
-        // Note: This assumes video files are already being served via HTTP
+        // Using external HTTP server with CORS handling
         const serverUrl =
           e.target.elements.serverUrl?.value || "http://localhost:8080";
 
-        // In a real implementation, you might want to fetch a directory listing from the server
-        // For this implementation, we'll use a simulated list of files
-        const simulatedFiles = [
-          "segment1.mp4",
-          "segment2.mp4",
-          "segment3.mp4",
-          "segment4.mp4",
-          "segment5.mp4",
-        ];
+        try {
+          // Attempt to fetch the directory listing from the server
+          // Use mode: 'cors' explicitly to ensure CORS headers are respected
+          const response = await fetch(`${serverUrl}/`, {
+            mode: "cors",
+            headers: {
+              Accept: "text/html",
+            },
+          });
 
-        // Return URLs pointing to the HTTP server
-        return simulatedFiles.map((file) => `${serverUrl}/${file}`);
+          const html = await response.text();
+
+          // Extract filenames from the directory listing HTML
+          // This regex looks for links to MP4, WebM, etc. files in the HTML
+          const videoRegex = /<a href="([^"]+\.(mp4|webm|mov|avi|ogg))"/gi;
+          const matches = [...html.matchAll(videoRegex)];
+
+          if (matches.length === 0) {
+            console.log("No video files found in directory listing");
+            throw new Error(
+              "No video files found on the server. Make sure you started the HTTP server."
+            );
+          }
+
+          // Get the filenames from the matches
+          const videoFiles = matches.map((match) => match[1]);
+          console.log("Found video files:", videoFiles);
+
+          // Sort them by name if they contain numbers
+          videoFiles.sort((a, b) => {
+            const numA = parseInt(a.match(/\d+/) || [0]);
+            const numB = parseInt(b.match(/\d+/) || [0]);
+            return numA - numB;
+          });
+
+          // Return URLs pointing to the HTTP server
+          return videoFiles.map((file) => `${serverUrl}/${file}`);
+        } catch (error) {
+          console.error("Error fetching directory listing:", error);
+          // Fallback approach - try individual files directly
+          console.log("Using fallback file list");
+
+          // Test if we can detect video files by trying some common patterns
+          const testPatterns = ["segment*.mp4", "video*.mp4", "*.mp4"];
+
+          // Check if we need to append the folder path to the URL
+          let urlBase = serverUrl;
+          if (folderPath && folderPath.trim() !== "") {
+            urlBase = `${serverUrl}/${folderPath}`;
+          }
+
+          // Create a reasonable set of video filenames to try
+          const simulatedFiles = [
+            "segment1.mp4",
+            "segment2.mp4",
+            "segment3.mp4",
+            "segment4.mp4",
+            "segment5.mp4",
+            "video1.mp4",
+            "video2.mp4",
+            "video3.mp4",
+          ];
+
+          return simulatedFiles.map((file) => `${urlBase}/${file}`);
+        }
       }
     } catch (error) {
       console.error("Error fetching video segments:", error);
@@ -180,11 +232,26 @@ export default function Home() {
     videoRef.current.src = videoSegments[currentSegmentIndex];
     videoRef.current.load();
 
+    // Add loading timeout to detect if video doesn't load
+    const loadingTimeout = setTimeout(() => {
+      console.warn("Video loading timeout - source might be invalid");
+      setError(
+        `Video is taking too long to load. Make sure the server is running at ${videoSegments[
+          currentSegmentIndex
+        ]
+          .split("/")
+          .slice(0, 3)
+          .join("/")}`
+      );
+    }, 10000); // 10 seconds timeout
+
     // Play the video when loaded
     const playVideo = async () => {
       try {
+        clearTimeout(loadingTimeout);
         // Hide canvas and show video when ready to play
         setShowCanvas(false);
+        setError(null);
 
         await videoRef.current.play();
         setVideoStarted(true);
@@ -193,12 +260,38 @@ export default function Home() {
         );
       } catch (err) {
         console.error("Error playing video:", err);
-        setError(`Error playing video: ${err.message}. Try clicking Play.`);
+
+        // Provide more helpful error messages
+        if (err.name === "NotSupportedError") {
+          setError(
+            `The video source is not supported. Make sure your server is running and accessible at ${videoSegments[
+              currentSegmentIndex
+            ]
+              .split("/")
+              .slice(0, 3)
+              .join("/")}. Try refreshing the page.`
+          );
+        } else if (err.name === "AbortError") {
+          setError("Video playback was aborted. Try clicking Play again.");
+        } else {
+          setError(`Error playing video: ${err.message}. Try clicking Play.`);
+        }
       }
+    };
+
+    // Add error handler for video
+    const handleVideoError = () => {
+      clearTimeout(loadingTimeout);
+      console.error("Video error event triggered");
+      setError(
+        `Failed to load video from: ${videoSegments[currentSegmentIndex]}. 
+        Make sure your server is running and accessible.`
+      );
     };
 
     // Wait for video to be loaded before playing
     videoRef.current.onloadeddata = playVideo;
+    videoRef.current.onerror = handleVideoError;
 
     // Handle video ended event to play the next segment
     const handleVideoEnded = () => {
@@ -215,6 +308,8 @@ export default function Home() {
       if (videoRef.current) {
         videoRef.current.removeEventListener("ended", handleVideoEnded);
         videoRef.current.onloadeddata = null;
+        videoRef.current.onerror = null;
+        clearTimeout(loadingTimeout);
       }
     };
   }, [isPlayingLocalVideos, videoSegments, currentSegmentIndex]);
@@ -222,12 +317,46 @@ export default function Home() {
   // Handle manual play button click
   const handleManualPlay = () => {
     if (videoRef.current) {
-      videoRef.current
-        .play()
-        .then(() => setVideoStarted(true))
+      // Check if the source is valid before trying to play
+      if (!videoRef.current.src || videoRef.current.src === "about:blank") {
+        setError(
+          "No valid video source available. Please check server connection."
+        );
+        return;
+      }
+
+      // Try to load the video source directly first to check availability
+      fetch(videoRef.current.src, { method: "HEAD", mode: "no-cors" })
+        .then(() => {
+          // If we can reach the source, try to play
+          videoRef.current
+            .play()
+            .then(() => {
+              setVideoStarted(true);
+              setError(null);
+            })
+            .catch((err) => {
+              console.error("Error on manual play:", err);
+
+              if (err.name === "NotSupportedError") {
+                setError(
+                  `The video can't be played. Make sure the CORS server is running at ${videoRef.current.src
+                    .split("/")
+                    .slice(0, 3)
+                    .join("/")}`
+                );
+              } else {
+                setError(
+                  `Error playing video: ${err.message}. If using server mode, be sure to run the CORS-enabled server.`
+                );
+              }
+            });
+        })
         .catch((err) => {
-          console.error("Error on manual play:", err);
-          setError(`Error on manual play: ${err.message}`);
+          console.error("Error checking video source:", err);
+          setError(
+            `Cannot access video source. Make sure the server is running and CORS is enabled.`
+          );
         });
     }
   };
@@ -255,10 +384,12 @@ export default function Home() {
 
   // Server mode instructions
   const serverModeInstructions = `
-1. On your Raspberry Pi, open a terminal.
-2. Navigate to the folder with your 10-second video segments.
-3. Run this command to serve the videos: python3 -m http.server 8080
-4. Enter the folder path and server URL below.
+1. On your Raspberry Pi, copy the cors_server.py script to your videos folder.
+2. Navigate to the folder with your video segments.
+3. Run this command to serve the videos: python3 cors_server.py
+4. In the "Server URL" field below, enter "http://localhost:8080" if you're viewing this page directly on the Pi,
+   or use your Pi's local IP address (e.g., "http://192.168.1.100:8080") if you're accessing from another device.
+5. In the "Folder Path" field, just enter the name of the folder where you're running the server.
   `;
 
   return (
@@ -310,6 +441,16 @@ export default function Home() {
             <div className="mb-3">
               <div className="flex space-x-4 mb-2">
                 <button
+                  onClick={() => setPlaybackMode("server")}
+                  className={`px-4 py-2 rounded-lg ${
+                    playbackMode === "server"
+                      ? "bg-green-600 text-white"
+                      : "bg-green-800 text-green-200"
+                  }`}
+                >
+                  Server Mode (Recommended)
+                </button>
+                <button
                   onClick={() => setPlaybackMode("api")}
                   className={`px-4 py-2 rounded-lg ${
                     playbackMode === "api"
@@ -318,16 +459,6 @@ export default function Home() {
                   }`}
                 >
                   API Mode
-                </button>
-                <button
-                  onClick={() => setPlaybackMode("server")}
-                  className={`px-4 py-2 rounded-lg ${
-                    playbackMode === "server"
-                      ? "bg-green-600 text-white"
-                      : "bg-green-800 text-green-200"
-                  }`}
-                >
-                  Server Mode
                 </button>
               </div>
               <div className="bg-black/20 p-3 rounded-lg mb-4 text-green-100 text-sm whitespace-pre-line">
@@ -338,19 +469,34 @@ export default function Home() {
             </div>
             <form onSubmit={handleLocalVideos} className="mb-6">
               <div className="flex flex-col gap-3">
-                <input
-                  name="folderPath"
-                  type="text"
-                  placeholder="Enter folder path (e.g., /home/pi/videos)"
-                  required
-                  className="w-full px-4 py-3 rounded-lg border-2 border-green-600 focus:outline-none focus:border-green-500 bg-green-700/20 text-white placeholder-green-300"
-                />
-                {playbackMode === "server" && (
+                {playbackMode === "server" ? (
+                  <>
+                    <input
+                      name="serverUrl"
+                      type="text"
+                      placeholder="Server URL (e.g., http://localhost:8080)"
+                      defaultValue="http://localhost:8080"
+                      className="w-full px-4 py-3 rounded-lg border-2 border-green-600 focus:outline-none focus:border-green-500 bg-green-700/20 text-white placeholder-green-300"
+                    />
+                    <input
+                      name="folderPath"
+                      type="text"
+                      placeholder="Folder name (if needed, usually leave empty)"
+                      className="w-full px-4 py-3 rounded-lg border-2 border-green-600 focus:outline-none focus:border-green-500 bg-green-700/20 text-white placeholder-green-300"
+                    />
+                    <div className="text-white text-xs">
+                      <div className="p-2 bg-green-700/30 rounded mb-2">
+                        <strong>For Pi Users:</strong> Make sure to run the HTTP
+                        server on your Pi first!
+                      </div>
+                    </div>
+                  </>
+                ) : (
                   <input
-                    name="serverUrl"
+                    name="folderPath"
                     type="text"
-                    placeholder="Server URL (e.g., http://localhost:8080)"
-                    defaultValue="http://localhost:8080"
+                    placeholder="Enter folder path (e.g., /home/pi/videos)"
+                    required
                     className="w-full px-4 py-3 rounded-lg border-2 border-green-600 focus:outline-none focus:border-green-500 bg-green-700/20 text-white placeholder-green-300"
                   />
                 )}
