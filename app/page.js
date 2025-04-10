@@ -4,20 +4,16 @@ import Image from "next/image";
 
 export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
-  const [streamUrl, setStreamUrl] = useState("");
   const [error, setError] = useState(null);
-  const imgRef = useRef(null);
-  const [localFolderPath, setLocalFolderPath] = useState("");
+  const [bookingId, setBookingId] = useState("");
   const [isPlayingLocalVideos, setIsPlayingLocalVideos] = useState(false);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const [videoSegments, setVideoSegments] = useState([]);
   const [currentSegmentIndex, setCurrentSegmentIndex] = useState(0);
-  const [playbackMode, setPlaybackMode] = useState("server"); // Changed default to 'server'
   const [showCanvas, setShowCanvas] = useState(false);
-
-  // Keep track of whether video has started playing
   const [videoStarted, setVideoStarted] = useState(false);
+  const [serverUrl, setServerUrl] = useState("https://localhost:8443");
 
   // Function to capture the last frame of a video
   const captureVideoFrame = () => {
@@ -38,68 +34,23 @@ export default function Home() {
     setShowCanvas(true);
   };
 
-  async function handleSubmit(e) {
-    e.preventDefault();
-    setIsLoading(true);
-    setError(null);
-    const url = e.target.elements.url.value;
-    setStreamUrl(url);
-    setIsPlayingLocalVideos(false);
-
-    // Start stream directly instead of preflight check
-    startStream(url);
-    setIsLoading(false);
-  }
-
-  function startStream(url) {
-    if (imgRef.current) {
-      imgRef.current.src = url;
-      imgRef.current.onerror = () => {
-        setError(
-          <div>
-            Unable to load stream. Please{" "}
-            <button
-              onClick={() => {
-                window.open(url, "_blank");
-                setError(
-                  "After accepting the certificate in the new tab, close it and click 'Try Again' here."
-                );
-              }}
-              className="underline text-green-300 hover:text-green-200"
-            >
-              click here
-            </button>{" "}
-            to accept the certificate first.{" "}
-            <button
-              onClick={() => startStream(url)}
-              className="ml-2 px-3 py-1 bg-green-600 rounded-md hover:bg-green-500"
-            >
-              Try Again
-            </button>
-          </div>
-        );
-      };
-      imgRef.current.onload = () => {
-        setError(null);
-      };
-    }
-  }
-
   async function handleLocalVideos(e) {
     e.preventDefault();
     setIsLoading(true);
     setError(null);
     setVideoStarted(false);
 
-    const folderPath = e.target.elements.folderPath.value.trim();
-    setLocalFolderPath(folderPath);
+    const booking = e.target.elements.bookingId.value.trim();
+    const url = e.target.elements.serverUrl.value.trim();
+    setBookingId(booking);
+    setServerUrl(url);
 
     try {
-      // Fetch video segments based on the selected playback mode
-      const videoFiles = await fetchVideoSegments(folderPath, e);
+      // Fetch video segments from the server
+      const videoFiles = await fetchVideoSegments(booking, url);
 
       if (videoFiles.length === 0) {
-        throw new Error("No video files found in the specified folder");
+        throw new Error("No video files found in the specified booking folder");
       }
 
       // Set up the video playlist
@@ -108,7 +59,6 @@ export default function Home() {
 
       // Start playback
       setIsPlayingLocalVideos(true);
-      setStreamUrl("");
     } catch (err) {
       console.error("Error loading video segments:", err);
       setError(`Error loading video segments: ${err.message}`);
@@ -118,114 +68,81 @@ export default function Home() {
     }
   }
 
-  // Fetch video segments from the specified folder
-  async function fetchVideoSegments(folderPath, e) {
+  // Fetch video segments from the specified booking folder
+  async function fetchVideoSegments(bookingId, serverUrl) {
     try {
-      if (playbackMode === "api") {
-        // Use our API route to get video segments
-        const response = await fetch(
-          `/api/video-segments?path=${encodeURIComponent(folderPath)}`
-        );
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || "Failed to fetch video segments");
+      // Construct booking folder URL
+      const bookingUrl = `${serverUrl}/${bookingId}`;
+
+      try {
+        // Attempt to fetch the directory listing from the booking folder
+        const response = await fetch(`${bookingUrl}/`, {
+          mode: "cors",
+          headers: {
+            Accept: "text/html",
+          },
+        });
+
+        const html = await response.text();
+
+        // Extract filenames from the directory listing HTML
+        const videoRegex = /<a href="([^"]+\.(mp4|webm|mov|avi|ogg))"/gi;
+        const matches = [...html.matchAll(videoRegex)];
+
+        if (matches.length === 0) {
+          console.log("No video files found in directory listing");
+          throw new Error(
+            "No video files found in this booking folder. Make sure the server is running and the booking ID is correct."
+          );
         }
 
-        const data = await response.json();
-        console.log("Fetched files:", data);
+        // Get the filenames from the matches
+        const videoFiles = matches.map((match) => match[1]);
+        console.log("Found video files:", videoFiles);
 
-        // Map file names to complete URLs that will be served by our API
-        return data.files.map(
-          (file) =>
-            `/api/video/${encodeURIComponent(folderPath)}/${encodeURIComponent(
-              file
-            )}`
-        );
-      } else {
-        // Using external HTTP server with CORS handling
-        const serverUrl =
-          e.target.elements.serverUrl?.value || "https://localhost:8443";
+        // Sort them by name if they contain numbers
+        videoFiles.sort((a, b) => {
+          const numA = parseInt(a.match(/\d+/) || [0]);
+          const numB = parseInt(b.match(/\d+/) || [0]);
+          return numA - numB;
+        });
 
-        try {
-          // Attempt to fetch the directory listing from the server
-          const response = await fetch(`${serverUrl}/`, {
-            mode: "cors",
-            headers: {
-              Accept: "text/html",
-            },
-          });
+        // Return URLs pointing to the HTTPS server with booking path
+        return videoFiles.map((file) => `${bookingUrl}/${file}`);
+      } catch (error) {
+        console.error("Error fetching directory listing:", error);
 
-          const html = await response.text();
-
-          // Extract filenames from the directory listing HTML
-          // This regex looks for links to MP4, WebM, etc. files in the HTML
-          const videoRegex = /<a href="([^"]+\.(mp4|webm|mov|avi|ogg))"/gi;
-          const matches = [...html.matchAll(videoRegex)];
-
-          if (matches.length === 0) {
-            console.log("No video files found in directory listing");
-            throw new Error(
-              "No video files found on the server. Make sure you started the HTTP server."
-            );
-          }
-
-          // Get the filenames from the matches
-          const videoFiles = matches.map((match) => match[1]);
-          console.log("Found video files:", videoFiles);
-
-          // Sort them by name if they contain numbers
-          videoFiles.sort((a, b) => {
-            const numA = parseInt(a.match(/\d+/) || [0]);
-            const numB = parseInt(b.match(/\d+/) || [0]);
-            return numA - numB;
-          });
-
-          // Return URLs pointing to the HTTP server
-          return videoFiles.map((file) => `${serverUrl}/${file}`);
-        } catch (error) {
-          console.error("Error fetching directory listing:", error);
-
-          // More helpful error message for HTTPS issues
-          if (
-            error.message.includes("certificate") ||
-            serverUrl.startsWith("https:")
-          ) {
-            setError(
-              `Certificate error: You need to accept the self-signed certificate. 
-               Open ${serverUrl} directly in a new tab, accept the certificate warning,
-               then return here and try again.`
-            );
-            throw new Error(
-              "Certificate not accepted. Open server URL directly first."
-            );
-          }
-
-          // Fallback approach - try individual files directly
-          console.log("Using fallback file list");
-
-          // Test if we can detect video files by trying some common patterns
-          const testPatterns = ["segment*.mp4", "video*.mp4", "*.mp4"];
-
-          // Check if we need to append the folder path to the URL
-          let urlBase = serverUrl;
-          if (folderPath && folderPath.trim() !== "") {
-            urlBase = `${serverUrl}/${folderPath}`;
-          }
-
-          // Create a reasonable set of video filenames to try
-          const simulatedFiles = [
-            "segment1.mp4",
-            "segment2.mp4",
-            "segment3.mp4",
-            "segment4.mp4",
-            "segment5.mp4",
-            "video1.mp4",
-            "video2.mp4",
-            "video3.mp4",
-          ];
-
-          return simulatedFiles.map((file) => `${urlBase}/${file}`);
+        // More helpful error message for HTTPS issues
+        if (
+          error.message.includes("certificate") ||
+          serverUrl.startsWith("https:")
+        ) {
+          setError(
+            `Certificate error: You need to accept the self-signed certificate. 
+             Open ${serverUrl} directly in a new tab, accept the certificate warning,
+             then return here and try again.`
+          );
+          throw new Error(
+            "Certificate not accepted. Open server URL directly first."
+          );
         }
+
+        // Fallback approach - try individual files directly
+        console.log("Using fallback file list");
+
+        // Create a reasonable set of video filenames to try
+        const simulatedFiles = [
+          "segment1.mp4",
+          "segment2.mp4",
+          "segment3.mp4",
+          "segment4.mp4",
+          "segment5.mp4",
+          "video1.mp4",
+          "video2.mp4",
+          "video3.mp4",
+        ];
+
+        return simulatedFiles.map((file) => `${bookingUrl}/${file}`);
       }
     } catch (error) {
       console.error("Error fetching video segments:", error);
@@ -390,265 +307,146 @@ export default function Home() {
     }
   };
 
-  // API mode instructions
-  const apiModeInstructions = `
-1. On your Raspberry Pi, enter the full path to the folder containing video segments.
-2. Make sure the folder has video files with names like segment1.mp4, segment2.mp4, etc.
-3. The built-in API will read and serve these files directly.
-  `;
-
-  // Server mode instructions
-  const serverModeInstructions = `
-1. On your Raspberry Pi, save both cors_server.py (HTTP) and https_server.py (HTTPS) to your videos folder.
-2. Navigate to the folder with your video segments.
-3. Run this command for HTTPS: python3 https_server.py
-   (You'll need to accept the self-signed certificate in your browser)
-4. In the "Server URL" field below, use HTTPS with port 8443:
-   - https://localhost:8443 (if viewing this page directly on the Pi)
-   - or https://YOUR_PI_IP:8443 (e.g., https://192.168.1.37:8443)
-5. Leave the "Folder Path" field empty unless your videos are in a subfolder.
-  `;
-
   return (
-    <div className="min-h-screen bg-green-800 p-4 sm:p-8 relative">
-      <div className="absolute top-4 left-4 sm:top-8 sm:left-8">
+    <div className="min-h-screen bg-green-800 p-4 sm:p-6 flex flex-col">
+      <div className="flex justify-between items-center mb-4">
         <Image
           src="/hometurf_logo.png"
           alt="HomeTurf Logo"
-          width={200}
-          height={50}
+          width={150}
+          height={38}
           priority
-          className="w-[150px] sm:w-[200px] h-auto"
+          className="h-auto"
         />
+        <div className="text-white text-right">
+          <h1 className="text-xl font-bold">Backwoods Arena</h1>
+          <h2 className="text-green-200 text-sm">Court 4</h2>
+        </div>
       </div>
 
-      <div className="max-w-[95vw] w-full mx-auto pt-24 sm:pt-32">
-        <div className="text-center mb-8 sm:mb-12">
-          <h1 className="text-white text-3xl sm:text-4xl font-bold mb-2">
-            Backwoods Arena
-          </h1>
-          <h2 className="text-green-200 text-xl sm:text-2xl">Court 4</h2>
+      <form onSubmit={handleLocalVideos} className="mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-2">
+          <div className="md:col-span-6">
+            <input
+              name="serverUrl"
+              type="text"
+              placeholder="Server URL (e.g., https://localhost:8443)"
+              defaultValue={serverUrl}
+              className="w-full px-3 py-2 rounded-lg border-2 border-green-600 focus:outline-none focus:border-green-500 bg-green-700/20 text-white placeholder-green-300"
+            />
+          </div>
+          <div className="md:col-span-4">
+            <input
+              name="bookingId"
+              type="text"
+              placeholder="Booking ID (e.g., booking_12345)"
+              defaultValue={bookingId}
+              className="w-full px-3 py-2 rounded-lg border-2 border-green-600 focus:outline-none focus:border-green-500 bg-green-700/20 text-white placeholder-green-300"
+            />
+          </div>
+          <div className="md:col-span-2">
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full bg-green-600 text-white px-3 py-2 rounded-lg font-semibold hover:bg-green-500 transition-colors disabled:opacity-50"
+            >
+              {isLoading ? "Loading..." : "Play Videos"}
+            </button>
+          </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-          <div>
-            <h3 className="text-white text-xl mb-4">Stream URL</h3>
-            <form onSubmit={handleSubmit} className="mb-6">
-              <div className="flex flex-col gap-3">
-                <input
-                  name="url"
-                  type="url"
-                  placeholder="Enter stream URL"
-                  required
-                  className="w-full px-4 py-3 rounded-lg border-2 border-green-600 focus:outline-none focus:border-green-500 bg-green-700/20 text-white placeholder-green-300"
-                />
-                <button
-                  type="submit"
-                  disabled={isLoading}
-                  className="w-full bg-green-600 text-white px-8 py-3 rounded-lg font-semibold hover:bg-green-500 transition-colors disabled:opacity-50"
-                >
-                  {isLoading ? "Loading..." : "Start Stream"}
-                </button>
-              </div>
-            </form>
-          </div>
+        <div className="text-white text-xs mt-1 flex space-x-2">
+          <button
+            type="button"
+            onClick={() => window.open(serverUrl, "_blank")}
+            className="px-2 py-1 bg-green-700/50 rounded hover:bg-green-700/70"
+          >
+            Accept Certificate
+          </button>
+          <span className="py-1">
+            {isPlayingLocalVideos && videoSegments.length > 0 && (
+              <span>
+                Playing {currentSegmentIndex + 1}/{videoSegments.length}
+                {bookingId && ` from ${bookingId}`}
+              </span>
+            )}
+          </span>
+        </div>
+      </form>
 
-          <div>
-            <h3 className="text-white text-xl mb-4">Local Video Segments</h3>
-            <div className="mb-3">
-              <div className="flex space-x-4 mb-2">
-                <button
-                  onClick={() => setPlaybackMode("server")}
-                  className={`px-4 py-2 rounded-lg ${
-                    playbackMode === "server"
-                      ? "bg-green-600 text-white"
-                      : "bg-green-800 text-green-200"
-                  }`}
-                >
-                  Server Mode (Recommended)
-                </button>
-                <button
-                  onClick={() => setPlaybackMode("api")}
-                  className={`px-4 py-2 rounded-lg ${
-                    playbackMode === "api"
-                      ? "bg-green-600 text-white"
-                      : "bg-green-800 text-green-200"
-                  }`}
-                >
-                  API Mode
-                </button>
-              </div>
-              <div className="bg-black/20 p-3 rounded-lg mb-4 text-green-100 text-sm whitespace-pre-line">
-                {playbackMode === "api"
-                  ? apiModeInstructions
-                  : serverModeInstructions}
-              </div>
+      {error && (
+        <div className="mb-4 p-3 bg-red-500/20 border-2 border-red-500 rounded-lg text-white text-sm">
+          {error}
+        </div>
+      )}
+
+      <div className="flex-grow flex flex-col items-center justify-center bg-black/50 rounded-lg overflow-hidden">
+        {isPlayingLocalVideos ? (
+          <div className="relative w-full h-full flex items-center justify-center">
+            <div className="relative w-full max-h-[85vh] flex items-center justify-center">
+              <video
+                ref={videoRef}
+                width="100%"
+                height="auto"
+                className={`max-w-full max-h-[85vh] ${
+                  showCanvas ? "hidden" : "block"
+                }`}
+                playsInline
+                preload="auto"
+                muted={false}
+                disablePictureInPicture
+                disableRemotePlayback
+              />
+              <canvas
+                ref={canvasRef}
+                className={`max-w-full max-h-[85vh] ${
+                  showCanvas ? "block" : "hidden"
+                }`}
+              />
             </div>
-            <form onSubmit={handleLocalVideos} className="mb-6">
-              <div className="flex flex-col gap-3">
-                {playbackMode === "server" ? (
-                  <>
-                    <input
-                      name="serverUrl"
-                      type="text"
-                      placeholder="Server URL (e.g., https://localhost:8443)"
-                      defaultValue="https://localhost:8443"
-                      className="w-full px-4 py-3 rounded-lg border-2 border-green-600 focus:outline-none focus:border-green-500 bg-green-700/20 text-white placeholder-green-300"
-                    />
-                    <input
-                      name="folderPath"
-                      type="text"
-                      placeholder="Folder name (if needed, usually leave empty)"
-                      className="w-full px-4 py-3 rounded-lg border-2 border-green-600 focus:outline-none focus:border-green-500 bg-green-700/20 text-white placeholder-green-300"
-                    />
-                    <div className="text-white text-xs">
-                      <div className="p-2 bg-green-700/30 rounded mb-2">
-                        <strong>For Pi Users:</strong> Make sure to run the
-                        HTTPS server on your Pi first!
-                      </div>
-                      <div className="p-2 bg-green-700/30 rounded mb-2">
-                        <strong>Certificate Warning:</strong> You must accept
-                        the self-signed certificate by opening the server URL
-                        directly in a new tab first, then return here.
-                        <button
-                          onClick={() =>
-                            window.open(
-                              document.querySelector('input[name="serverUrl"]')
-                                .value,
-                              "_blank"
-                            )
-                          }
-                          className="ml-2 px-2 py-1 bg-green-600 rounded text-white hover:bg-green-500"
-                        >
-                          Open server URL
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <input
-                    name="folderPath"
-                    type="text"
-                    placeholder="Enter folder path (e.g., /home/pi/videos)"
-                    required
-                    className="w-full px-4 py-3 rounded-lg border-2 border-green-600 focus:outline-none focus:border-green-500 bg-green-700/20 text-white placeholder-green-300"
-                  />
-                )}
+
+            {!videoStarted && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/30">
                 <button
-                  type="submit"
-                  disabled={isLoading}
-                  className="w-full bg-green-600 text-white px-8 py-3 rounded-lg font-semibold hover:bg-green-500 transition-colors disabled:opacity-50"
+                  onClick={handleManualPlay}
+                  className="bg-green-600 hover:bg-green-500 text-white rounded-full p-4"
                 >
-                  {isLoading ? "Loading..." : "Play Video Segments"}
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="40"
+                    height="40"
+                    viewBox="0 0 24 24"
+                    fill="white"
+                  >
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
                 </button>
               </div>
-            </form>
-          </div>
-        </div>
+            )}
 
-        {error && (
-          <div className="mb-4 p-4 bg-red-500/20 border-2 border-red-500 rounded-lg text-white">
-            {error}
+            {videoStarted && (
+              <button
+                onClick={startFullscreen}
+                className="absolute top-2 right-2 bg-green-600/50 hover:bg-green-500 text-white rounded-full p-2"
+                title="Fullscreen"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="white"
+                >
+                  <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
+                </svg>
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="text-white text-center p-12">
+            Enter the server URL and booking ID above and click "Play Videos"
           </div>
         )}
-
-        <div className="bg-white/10 backdrop-blur-sm p-4 sm:p-6 rounded-lg shadow-lg">
-          {streamUrl && !isPlayingLocalVideos && (
-            <img
-              ref={imgRef}
-              width="640"
-              height="480"
-              className="w-full h-auto rounded-lg max-h-[80vh] object-contain"
-              alt="Stream preview"
-            />
-          )}
-
-          {isPlayingLocalVideos && (
-            <div className="relative">
-              <div className="relative bg-black rounded-lg overflow-hidden">
-                <video
-                  ref={videoRef}
-                  width="100%"
-                  height="auto"
-                  className={`w-full h-auto ${showCanvas ? "hidden" : "block"}`}
-                  playsInline
-                  preload="auto"
-                  muted={false}
-                  disablePictureInPicture
-                  disableRemotePlayback
-                />
-                <canvas
-                  ref={canvasRef}
-                  className={`w-full h-auto ${showCanvas ? "block" : "hidden"}`}
-                />
-              </div>
-
-              {!videoStarted && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/30">
-                  <button
-                    onClick={handleManualPlay}
-                    className="bg-green-600 hover:bg-green-500 text-white rounded-full p-4"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      width="40"
-                      height="40"
-                      viewBox="0 0 24 24"
-                      fill="white"
-                    >
-                      <path d="M8 5v14l11-7z" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-
-              {videoStarted && (
-                <div className="absolute top-2 right-2">
-                  <button
-                    onClick={startFullscreen}
-                    className="bg-green-600/50 hover:bg-green-500 text-white rounded-full p-2"
-                    title="Fullscreen"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      width="24"
-                      height="24"
-                      viewBox="0 0 24 24"
-                      fill="white"
-                    >
-                      <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-
-              {videoStarted ? (
-                <div className="mt-4 mb-2 text-white text-center flex justify-between items-center">
-                  <div className="text-sm">
-                    Playing segment {currentSegmentIndex + 1} of{" "}
-                    {videoSegments.length}
-                  </div>
-                  <div>
-                    <span className="text-xs bg-green-700 px-2 py-1 rounded">
-                      Seamless Mode
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-4 text-white text-center">
-                  <p>Ready to play segments from: {localFolderPath}</p>
-                  <p className="text-xs mt-1">Click the play button to start</p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {!streamUrl && !isPlayingLocalVideos && (
-            <div className="text-white text-center p-12">
-              Enter a stream URL or a local folder path to begin
-            </div>
-          )}
-        </div>
       </div>
     </div>
   );
