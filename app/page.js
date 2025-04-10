@@ -160,9 +160,12 @@ export default function Home() {
       return;
     }
 
+    // Capture the ref value in a variable for cleanup
+    const videoElement = videoRef.current;
+
     // Set the video source
-    videoRef.current.src = videoSegments[currentSegmentIndex];
-    videoRef.current.load();
+    videoElement.src = videoSegments[currentSegmentIndex];
+    videoElement.load();
 
     // Add loading timeout to detect if video doesn't load
     const loadingTimeout = setTimeout(() => {
@@ -185,7 +188,7 @@ export default function Home() {
         setShowCanvas(false);
         setError(null);
 
-        await videoRef.current.play();
+        await videoElement.play();
         setVideoStarted(true);
         console.log(
           `Playing segment ${currentSegmentIndex + 1}/${videoSegments.length}`
@@ -222,8 +225,8 @@ export default function Home() {
     };
 
     // Wait for video to be loaded before playing
-    videoRef.current.onloadeddata = playVideo;
-    videoRef.current.onerror = handleVideoError;
+    videoElement.onloadeddata = playVideo;
+    videoElement.onerror = handleVideoError;
 
     // Handle video ended event to play the next segment
     const handleVideoEnded = () => {
@@ -234,17 +237,22 @@ export default function Home() {
       setCurrentSegmentIndex(nextIndex);
     };
 
-    videoRef.current.addEventListener("ended", handleVideoEnded);
+    videoElement.addEventListener("ended", handleVideoEnded);
 
     return () => {
-      if (videoRef.current) {
-        videoRef.current.removeEventListener("ended", handleVideoEnded);
-        videoRef.current.onloadeddata = null;
-        videoRef.current.onerror = null;
+      if (videoElement) {
+        videoElement.removeEventListener("ended", handleVideoEnded);
+        videoElement.onloadeddata = null;
+        videoElement.onerror = null;
         clearTimeout(loadingTimeout);
       }
     };
-  }, [isPlayingLocalVideos, videoSegments, currentSegmentIndex]);
+  }, [
+    isPlayingLocalVideos,
+    videoSegments,
+    currentSegmentIndex,
+    captureVideoFrame,
+  ]);
 
   // Handle manual play button click
   const handleManualPlay = () => {
@@ -444,7 +452,8 @@ export default function Home() {
           </div>
         ) : (
           <div className="text-white text-center p-12">
-            Enter the server URL and booking ID above and click "Play Videos"
+            Enter the server URL and booking ID above and click &quot;Play
+            Videos&quot;
           </div>
         )}
       </div>
