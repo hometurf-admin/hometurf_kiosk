@@ -144,11 +144,10 @@ export default function Home() {
       } else {
         // Using external HTTP server with CORS handling
         const serverUrl =
-          e.target.elements.serverUrl?.value || "http://localhost:8080";
+          e.target.elements.serverUrl?.value || "https://localhost:8443";
 
         try {
           // Attempt to fetch the directory listing from the server
-          // Use mode: 'cors' explicitly to ensure CORS headers are respected
           const response = await fetch(`${serverUrl}/`, {
             mode: "cors",
             headers: {
@@ -185,6 +184,22 @@ export default function Home() {
           return videoFiles.map((file) => `${serverUrl}/${file}`);
         } catch (error) {
           console.error("Error fetching directory listing:", error);
+
+          // More helpful error message for HTTPS issues
+          if (
+            error.message.includes("certificate") ||
+            serverUrl.startsWith("https:")
+          ) {
+            setError(
+              `Certificate error: You need to accept the self-signed certificate. 
+               Open ${serverUrl} directly in a new tab, accept the certificate warning,
+               then return here and try again.`
+            );
+            throw new Error(
+              "Certificate not accepted. Open server URL directly first."
+            );
+          }
+
           // Fallback approach - try individual files directly
           console.log("Using fallback file list");
 
@@ -384,12 +399,14 @@ export default function Home() {
 
   // Server mode instructions
   const serverModeInstructions = `
-1. On your Raspberry Pi, copy the cors_server.py script to your videos folder.
+1. On your Raspberry Pi, save both cors_server.py (HTTP) and https_server.py (HTTPS) to your videos folder.
 2. Navigate to the folder with your video segments.
-3. Run this command to serve the videos: python3 cors_server.py
-4. In the "Server URL" field below, enter "http://localhost:8080" if you're viewing this page directly on the Pi,
-   or use your Pi's local IP address (e.g., "http://192.168.1.100:8080") if you're accessing from another device.
-5. In the "Folder Path" field, just enter the name of the folder where you're running the server.
+3. Run this command for HTTPS: python3 https_server.py
+   (You'll need to accept the self-signed certificate in your browser)
+4. In the "Server URL" field below, use HTTPS with port 8443:
+   - https://localhost:8443 (if viewing this page directly on the Pi)
+   - or https://YOUR_PI_IP:8443 (e.g., https://192.168.1.37:8443)
+5. Leave the "Folder Path" field empty unless your videos are in a subfolder.
   `;
 
   return (
@@ -474,8 +491,8 @@ export default function Home() {
                     <input
                       name="serverUrl"
                       type="text"
-                      placeholder="Server URL (e.g., http://localhost:8080)"
-                      defaultValue="http://localhost:8080"
+                      placeholder="Server URL (e.g., https://localhost:8443)"
+                      defaultValue="https://localhost:8443"
                       className="w-full px-4 py-3 rounded-lg border-2 border-green-600 focus:outline-none focus:border-green-500 bg-green-700/20 text-white placeholder-green-300"
                     />
                     <input
@@ -486,8 +503,25 @@ export default function Home() {
                     />
                     <div className="text-white text-xs">
                       <div className="p-2 bg-green-700/30 rounded mb-2">
-                        <strong>For Pi Users:</strong> Make sure to run the HTTP
-                        server on your Pi first!
+                        <strong>For Pi Users:</strong> Make sure to run the
+                        HTTPS server on your Pi first!
+                      </div>
+                      <div className="p-2 bg-green-700/30 rounded mb-2">
+                        <strong>Certificate Warning:</strong> You must accept
+                        the self-signed certificate by opening the server URL
+                        directly in a new tab first, then return here.
+                        <button
+                          onClick={() =>
+                            window.open(
+                              document.querySelector('input[name="serverUrl"]')
+                                .value,
+                              "_blank"
+                            )
+                          }
+                          className="ml-2 px-2 py-1 bg-green-600 rounded text-white hover:bg-green-500"
+                        >
+                          Open server URL
+                        </button>
                       </div>
                     </div>
                   </>
